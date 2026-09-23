@@ -5,9 +5,26 @@
  * CJS(.js)を .mjs から default import（Nodeのinterop: default = module.exports）。
  */
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
 import util from '../assets/js/util.js';
 import search from '../assets/js/search.js';
 import data from '../assets/js/data.js';
+import facets from '../assets/js/facets.js';
+import seo from '../assets/js/seo.js';
+import * as sitemap from '../tools/gen_sitemap.mjs';
+
+// texts-default.js はブラウザ専用（window.TS.textsDefault に代入するだけ）なので、
+// 疑似ブラウザ文脈で1回だけ評価して既定文言を取り出す（本体ファイルは改造しない）。
+const textsDefault = (() => {
+  const src = fs.readFileSync(fileURLToPath(new URL('../assets/js/texts-default.js', import.meta.url)), 'utf8');
+  const ctx = {};
+  ctx.window = ctx; // ブラウザと同じく window === グローバル
+  vm.createContext(ctx);
+  vm.runInContext(src, ctx);
+  return ctx.TS.textsDefault;
+})();
 
 let pass = 0, fail = 0;
 const results = [];
@@ -389,6 +406,385 @@ t('data.buildDB: Stores必須列欠損warningは日本語ラベル（要件2-3�
   assert.ok(db.warnings.indexOf('Storesシートに必須列が見つかりません: Store_ID') >= 0);
   assert.ok(db.warnings.indexOf('Storesシートに必須列が見つかりません: エリア') >= 0);
   assert.ok(db.warnings.indexOf('Storesシートに必須列が見つかりません: 公開フラグ') >= 0);
+});
+
+// ===========================================================================
+// ===== facets: エリア・最寄駅の検索画面改善（改修① 2026-09-22・内容確認書1.(a)〜(d)） =====
+// ===========================================================================
+
+// 実データ（2026-09-22 gviz実測・公開150件）から取った代表値。表記はシートのまま。
+const REAL_STATIONS = [
+  '渋谷駅', '新宿駅', '中目黒駅', '六本木駅', '新橋駅', '新大久保駅', '東京駅', '神保町駅', '下北沢駅',
+  '新宿三丁目駅', '吉祥寺駅', '日比谷駅', '池袋駅', '西武新宿駅', '新宿御苑前駅',
+  '勝どき駅', '虎ノ門ヒルズ駅', '御茶ノ水駅', '田町駅・三田駅', '羽田空港第1ターミナル駅', '東銀座',
+];
+const REAL_AREAS = ['新宿', '渋谷', '中目黒', '六本木', '銀座', '池袋', '新大久保', '神保町', '下北沢', '上野', '練馬'];
+
+// ---- util.normFacet（約束(b) ひらがな・カタカナ・全角半角の吸収） ----
+t('normFacet: ひらがな・カタカナ・半角カナが同じ形になる（しんじゅく=シンジュク=ｼﾝｼﾞｭｸ）', () => {
+  assert.equal(util.normFacet('しんじゅく'), util.normFacet('シンジュク'));
+  assert.equal(util.normFacet('ｼﾝｼﾞｭｸ'), util.normFacet('シンジュク'));
+});
+t('normFacet: 全角英数は半角になり、英字は小文字化される', () => {
+  assert.equal(util.normFacet('ＴＨＡＩ１'), 'thai1');
+});
+t('normFacet: 半角/全角スペースと中黒を落とす（田町駅・三田駅を「三田」で引ける）', () => {
+  assert.equal(util.normFacet('田町駅 ・ 三田駅').indexOf(util.normFacet('三田')) >= 0, true);
+  assert.equal(util.normFacet('　渋 谷 駅　'), '渋谷駅');
+});
+
+// ---- facets.parseListText（約束(d) 読点区切り） ----
+t('facets.parseListText: 読点「、」で分解しトリムする', () => {
+  assert.deepEqual(facets.parseListText('新宿、 渋谷 、中目黒'), ['新宿', '渋谷', '中目黒']);
+});
+t('facets.parseListText: 全角/半角カンマ・改行も区切りとして受ける（運営者の手入力ゆれ対策）', () => {
+  assert.deepEqual(facets.parseListText('新宿,渋谷，中目黒\n六本木'), ['新宿', '渋谷', '中目黒', '六本木']);
+});
+t('facets.parseListText: 空文字・null・空要素だけなら空配列', () => {
+  assert.deepEqual(facets.parseListText(''), []);
+  assert.deepEqual(facets.parseListText(null), []);
+  assert.deepEqual(facets.parseListText('、、 、'), []);
+});
+t('facets.parseListText: 配列もそのまま受ける', () => {
+  assert.deepEqual(facets.parseListText([' 新宿 ', '', '渋谷']), ['新宿', '渋谷']);
+});
+
+// ---- facets.dedupOrdered / buildCatItems（複製していた選択肢生成の共通化） ----
+t('facets.dedupOrdered: 出現順を保って重複と空欄を落とす', () => {
+  assert.deepEqual(facets.dedupOrdered(['渋谷', ' 渋谷 ', '', null, '新宿']), ['渋谷', '新宿']);
+});
+t('facets.buildCatItems: 非公開の店舗・マスタを選択肢に入れない', () => {
+  const db = {
+    stores: [
+      { area: '新宿', station: '新宿駅', storeType: 'Restaurant', published: true },
+      { area: '渋谷', station: '渋谷駅', storeType: 'Cafe', published: true },
+      { area: '非公開エリア', station: '非公開駅', storeType: 'Hidden', published: false },
+    ],
+    scenes: [{ name: 'ひとりごはん', published: true }, { name: '非公開シーン', published: false }],
+    features: [{ name: 'テラス席', published: true }],
+  };
+  const items = facets.buildCatItems(db);
+  assert.deepEqual(items.area, ['新宿', '渋谷']);
+  assert.deepEqual(items.station, ['新宿駅', '渋谷駅']);
+  assert.deepEqual(items.scene, ['ひとりごはん']);
+  assert.deepEqual(items.feature, ['テラス席']);
+  assert.deepEqual(items.type, ['Restaurant', 'Cafe']);
+});
+
+// ---- facets.resolveMajor（約束(d) Site_Textsで並びを変えられる） ----
+t('facets.resolveMajor: Site_Textsに書かれた順で並ぶ', () => {
+  assert.deepEqual(
+    facets.resolveMajor(REAL_AREAS, '渋谷、新宿、上野'),
+    ['渋谷', '新宿', '上野']
+  );
+});
+t('facets.resolveMajor: 実データに無い名前は黙って外す（存在しない条件のチップを出さない）', () => {
+  assert.deepEqual(facets.resolveMajor(REAL_AREAS, '新宿、京都、渋谷'), ['新宿', '渋谷']);
+});
+t('facets.resolveMajor: 重複指定は1つにまとめる', () => {
+  assert.deepEqual(facets.resolveMajor(REAL_AREAS, '新宿、新宿、渋谷'), ['新宿', '渋谷']);
+});
+t('facets.resolveMajor: 末尾の「駅」の有無は一意に定まるときだけ吸収しデータ表記で返す', () => {
+  assert.deepEqual(facets.resolveMajor(REAL_STATIONS, '東銀座駅、勝どき'), ['東銀座', '勝どき駅']);
+});
+t('facets.resolveMajor: 「駅」を省いても前方一致では拾わない（新宿→新宿駅だけ・新宿三丁目駅は無関係）', () => {
+  // 末尾の「駅」を外した完全一致なので、「新宿」は「新宿駅」にだけ当たる。
+  assert.deepEqual(facets.resolveMajor(['新宿駅', '西武新宿駅', '新宿三丁目駅'], '新宿'), ['新宿駅']);
+});
+t('facets.resolveMajor: 「駅」有無で2つに割れる候補があるときは当てない（別の駅に化けさせない）', () => {
+  assert.deepEqual(facets.resolveMajor(['東銀座', '東銀座駅'], '東銀座駅'), ['東銀座駅']); // 完全一致は当たる
+  assert.deepEqual(facets.resolveMajor(['東銀座', '東銀座駅'], '東銀座前'), []);            // 曖昧一致はしない
+});
+t('facets.resolveMajor: Site_Textsが空なら第3引数の既定値を使う', () => {
+  assert.deepEqual(facets.resolveMajor(REAL_AREAS, '', '新宿、渋谷'), ['新宿', '渋谷']);
+  assert.deepEqual(facets.resolveMajor(REAL_AREAS, null, ['上野']), ['上野']);
+});
+
+// ---- facets.filterItems（約束(b) 駅名の入力欄） ----
+t('facets.filterItems: 部分一致で絞る', () => {
+  assert.deepEqual(facets.filterItems(REAL_STATIONS, '新宿'), ['新宿駅', '新宿三丁目駅', '西武新宿駅', '新宿御苑前駅']);
+});
+t('facets.filterItems: 空入力は全件（絞り込みなし）', () => {
+  assert.equal(facets.filterItems(REAL_STATIONS, '').length, REAL_STATIONS.length);
+  assert.equal(facets.filterItems(REAL_STATIONS, '  ').length, REAL_STATIONS.length);
+});
+t('facets.filterItems: ひらがな・カタカナ・半角カナで同じ結果（どき=ドキ=ﾄﾞｷ→勝どき駅）', () => {
+  const a = facets.filterItems(REAL_STATIONS, 'どき');
+  const b = facets.filterItems(REAL_STATIONS, 'ドキ');
+  const c = facets.filterItems(REAL_STATIONS, 'ﾄﾞｷ');
+  assert.deepEqual(a, ['勝どき駅']);
+  assert.deepEqual(b, a);
+  assert.deepEqual(c, a);
+});
+t('facets.filterItems: の=ノ=ﾉ で虎ノ門ヒルズ駅・御茶ノ水駅が同じように出る', () => {
+  const a = facets.filterItems(REAL_STATIONS, 'の門');
+  assert.deepEqual(a, ['虎ノ門ヒルズ駅']);
+  assert.deepEqual(facets.filterItems(REAL_STATIONS, 'ノ門'), a);
+  assert.deepEqual(facets.filterItems(REAL_STATIONS, 'ﾉ門'), a);
+});
+t('facets.filterItems: 全角数字でも半角数字でも同じ（羽田空港第1ターミナル駅）', () => {
+  const a = facets.filterItems(REAL_STATIONS, '第１タ');
+  assert.deepEqual(a, ['羽田空港第1ターミナル駅']);
+  assert.deepEqual(facets.filterItems(REAL_STATIONS, '第1タ'), a);
+});
+t('facets.filterItems: 中黒をまたいだ併記も引ける（田町駅・三田駅を「三田」で）', () => {
+  assert.deepEqual(facets.filterItems(REAL_STATIONS, '三田'), ['田町駅・三田駅']);
+});
+t('facets.filterItems: 一致しなければ空配列', () => {
+  assert.deepEqual(facets.filterItems(REAL_STATIONS, '博多'), []);
+});
+
+// ---- facets.ensureSelected（約束(c) 選択中・URL着地の値は必ず表示） ----
+t('facets.ensureSelected: 主要一覧に無い選択値を末尾に足す', () => {
+  assert.deepEqual(
+    facets.ensureSelected(['渋谷駅', '新宿駅'], REAL_STATIONS, '勝どき駅'),
+    ['渋谷駅', '新宿駅', '勝どき駅']
+  );
+});
+t('facets.ensureSelected: すでに表示されていれば足さない', () => {
+  assert.deepEqual(facets.ensureSelected(['渋谷駅'], REAL_STATIONS, '渋谷駅'), ['渋谷駅']);
+});
+t('facets.ensureSelected: 選択値が空なら何もしない', () => {
+  assert.deepEqual(facets.ensureSelected(['渋谷駅'], REAL_STATIONS, ''), ['渋谷駅']);
+});
+t('facets.ensureSelected: データに存在しない値はチップにしない（dropped の一言に任せる）', () => {
+  assert.deepEqual(facets.ensureSelected(['渋谷駅'], REAL_STATIONS, '博多駅'), ['渋谷駅']);
+});
+t('facets.ensureSelected: 全角/半角ゆれのURL値はデータ側の表記で足す', () => {
+  assert.deepEqual(facets.ensureSelected([], ['CAFE'], 'ＣＡＦＥ'), ['CAFE']);
+});
+
+// ---- facets.visibleItems（初期表示・展開・絞り込みの組み合わせ） ----
+const MAJOR_ST = ['渋谷駅', '新宿駅', '中目黒駅'];
+t('facets.visibleItems: 既定は主要のみ（約束(a) 初期表示）', () => {
+  const v = facets.visibleItems({ all: REAL_STATIONS, major: MAJOR_ST });
+  assert.deepEqual(v.items, MAJOR_ST);
+  assert.equal(v.mode, 'major');
+  assert.equal(v.total, REAL_STATIONS.length);
+});
+t('facets.visibleItems: 展開すると全件（約束(a) 駅一覧を見る）', () => {
+  const v = facets.visibleItems({ all: REAL_STATIONS, major: MAJOR_ST, expanded: true });
+  assert.equal(v.mode, 'all');
+  assert.equal(v.items.length, REAL_STATIONS.length);
+});
+t('facets.visibleItems: 入力があれば主要に無い駅も全候補から絞って出す', () => {
+  const v = facets.visibleItems({ all: REAL_STATIONS, major: MAJOR_ST, query: 'どき' });
+  assert.equal(v.mode, 'filtered');
+  assert.deepEqual(v.items, ['勝どき駅']);
+});
+t('facets.visibleItems: 主要リストが空なら全件表示に落ちる（空のグループを作らない）', () => {
+  const v = facets.visibleItems({ all: REAL_STATIONS, major: [] });
+  assert.equal(v.mode, 'all');
+  assert.equal(v.items.length, REAL_STATIONS.length);
+});
+t('facets.visibleItems: URL着地の駅が主要に無くても表示される（約束(c)）', () => {
+  const v = facets.visibleItems({ all: REAL_STATIONS, major: MAJOR_ST, selected: '御茶ノ水駅' });
+  assert.equal(v.items.indexOf('御茶ノ水駅') >= 0, true);
+  assert.equal(v.items.length, MAJOR_ST.length + 1);
+});
+t('facets.visibleItems: 絞り込みで0件でも選択中の駅は残す（解除できなくならない）', () => {
+  const v = facets.visibleItems({ all: REAL_STATIONS, major: MAJOR_ST, query: '博多', selected: '渋谷駅' });
+  assert.equal(v.matched, 0);
+  assert.deepEqual(v.items, ['渋谷駅']);
+});
+
+// ---- 既定の主要リスト（約束(d) 既定値は texts-default.js） ----
+t('texts-default: major_areas の既定は実データ4件以上の9エリア', () => {
+  assert.deepEqual(
+    facets.parseListText(textsDefault.major_areas),
+    ['新宿', '渋谷', '中目黒', '六本木', '銀座', '池袋', '新大久保', '神保町', '下北沢']
+  );
+});
+t('texts-default: major_stations の既定は実データ3件以上の13駅', () => {
+  assert.deepEqual(
+    facets.parseListText(textsDefault.major_stations),
+    ['渋谷駅', '新宿駅', '中目黒駅', '六本木駅', '新橋駅', '新大久保駅', '東京駅', '神保町駅', '下北沢駅',
+      '新宿三丁目駅', '吉祥寺駅', '日比谷駅', '池袋駅']
+  );
+});
+t('texts-default: 既定の主要リストは実データ表記でそのまま解決できる（1件も落ちない）', () => {
+  assert.equal(facets.resolveMajor(REAL_AREAS, textsDefault.major_areas).length, 9);
+  assert.equal(facets.resolveMajor(REAL_STATIONS, textsDefault.major_stations).length, 13);
+});
+t('texts-default: 展開ボタン・駅名入力欄の既定文言が揃っている', () => {
+  ['search_area_show_all', 'search_area_show_major', 'search_station_show_all',
+    'search_station_show_major', 'search_station_filter_label',
+    'search_station_filter_placeholder', 'search_station_no_match'].forEach((k) => {
+      assert.equal(typeof textsDefault[k] === 'string' && textsDefault[k].length > 0, true, k + ' が空');
+    });
+});
+
+// ---- 退行防止: 検索ロジック側は触っていない ----
+t('退行: エリア/駅の条件は従来どおり完全一致でAND（チップ改修で絞り込み挙動を変えていない）', () => {
+  const db = {
+    stores: [
+      { id: 's1', name: 'A', area: '新宿', station: '新宿駅', storeType: 'Restaurant', published: true },
+      { id: 's2', name: 'B', area: '新宿', station: '新宿三丁目駅', storeType: 'Restaurant', published: true },
+      { id: 's3', name: 'C', area: '渋谷', station: '渋谷駅', storeType: 'Cafe', published: true },
+    ],
+    menus: [], scenes: [], features: [], storeMenus: [], storeScenes: [], storeFeatures: [],
+  };
+  assert.deepEqual(search.run(db, { area: '新宿' }).stores.map(s => s.id), ['s1', 's2']);
+  assert.deepEqual(search.run(db, { area: '新宿', station: '新宿駅' }).stores.map(s => s.id), ['s1']);
+  // 部分一致はしない（「新宿」で「新宿三丁目駅」は引っかからない＝駅チップの絞り込みとは別物）
+  assert.deepEqual(search.run(db, { station: '新宿' }).dropped, [{ cat: 'station', val: '新宿' }]);
+});
+
+// ===== sitemap生成（改修6-(a)・tools/gen_sitemap.mjs の純粋関数） =====
+
+// gviz応答の形を作るヘルパー（上の gv() は data.js 用。こちらは生のオブジェクトを渡す）
+function gvObj(labels, rows) {
+  return {
+    table: {
+      cols: labels.map((l) => ({ label: l })),
+      rows: rows.map((cells) => ({ c: cells.map((v) => (v === null ? null : { v })) })),
+    },
+  };
+}
+
+t('sitemap.xmlEscape: &<>"\' を実体参照に変換する', () => {
+  assert.equal(sitemap.xmlEscape(`a&b<c>d"e'f`), 'a&amp;b&lt;c&gt;d&quot;e&apos;f');
+});
+t('sitemap.buildSitemapXml: 固定ページ8件＋店舗件数＝URL総数（件数が合う）', () => {
+  const xml = sitemap.buildSitemapXml({ storeIds: ['S00001', 'S00002', 'S00003'], lastmod: '2026-09-22' });
+  assert.equal(sitemap.FIXED_PATHS.length, 8);
+  assert.equal((xml.match(/<loc>/g) || []).length, 8 + 3);
+});
+t('sitemap.buildSitemapXml: トップは / ・店舗は store.html?id= 形式・lastmodが入る', () => {
+  const xml = sitemap.buildSitemapXml({ storeIds: ['S00001'], lastmod: '2026-09-22' });
+  assert.ok(xml.includes('<loc>https://thaispot-tokyo.com/</loc>'));
+  assert.ok(xml.includes('<loc>https://thaispot-tokyo.com/store.html?id=S00001</loc>'));
+  assert.ok(xml.includes('<lastmod>2026-09-22</lastmod>'));
+  assert.ok(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>'));
+  assert.ok(xml.includes('xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'));
+});
+t('sitemap.buildSitemapXml: 危険な文字を含むIDでも生XMLに &<> が漏れない（URLエンコード＋実体参照）', () => {
+  const xml = sitemap.buildSitemapXml({ storeIds: ['S&1', 'S<2>'], lastmod: '2026-09-22' });
+  const locs = [...xml.matchAll(/<loc>(.*?)<\/loc>/g)].map((m) => m[1]);
+  assert.ok(locs.some((l) => l.endsWith('id=S%261')));
+  assert.ok(locs.some((l) => l.endsWith('id=S%3C2%3E')));
+  assert.equal(/<loc>[^<]*[&][^a]/.test(xml), false); // 生の & が残っていない
+});
+t('sitemap.buildSitemapXml: originを差し替えられる（ステージング用・末尾スラッシュは正規化）', () => {
+  const xml = sitemap.buildSitemapXml({ origin: 'https://stg.example.com/', storeIds: [], lastmod: '2026-09-22' });
+  assert.ok(xml.includes('<loc>https://stg.example.com/</loc>'));
+  assert.ok(xml.includes('<loc>https://stg.example.com/search.html</loc>'));
+});
+t('sitemap.parseStoreIdsFromGviz: Published TRUE系のみ・空IDスキップ・ID重複は先勝ち', () => {
+  const obj = gvObj(['Store_ID', 'Store_Name', 'Published'], [
+    ['S00001', 'A', true],
+    ['', '空ID', 'TRUE'],
+    ['S00002', 'B', 'FALSE'],
+    ['S00001', '重複', 'TRUE'],
+    ['S00003', 'C', 'YES'],
+    ['S00004', 'D', 1],
+  ]);
+  assert.deepEqual(sitemap.parseStoreIdsFromGviz(obj), ['S00001', 'S00003', 'S00004']);
+});
+t('sitemap.parseStoreIdsFromGviz: cols.labelが空なら1行目をヘッダー扱い（列型混在フォールバック）', () => {
+  const obj = { table: { cols: [{ label: '' }, { label: '' }], rows: [
+    { c: [{ v: 'Store_ID' }, { v: 'Published' }] },
+    { c: [{ v: 'S00009' }, { v: 'TRUE' }] },
+  ] } };
+  assert.deepEqual(sitemap.parseStoreIdsFromGviz(obj), ['S00009']);
+});
+t('sitemap.parseStoreIdsFromGviz: Store_ID列が無ければ例外（誤った空sitemapを書かない）', () => {
+  assert.throws(() => sitemap.parseStoreIdsFromGviz(gvObj(['Name'], [['A']])), /Store_ID/);
+});
+t('sitemap.parseGviz: 外殻 setResponse(...) を剥がして JSON.parse できる', () => {
+  const raw = "/*O_o*/\ngoogle.visualization.Query.setResponse({\"table\":{\"cols\":[],\"rows\":[]}});";
+  assert.deepEqual(sitemap.parseGviz(raw).table.rows, []);
+});
+t('sitemap.todayJst: UTC深夜でも日本時間の日付になる（Actionsの実行環境はUTC）', () => {
+  assert.equal(sitemap.todayJst(new Date('2026-09-21T16:00:00Z')), '2026-09-22');
+  assert.equal(sitemap.todayJst(new Date('2026-09-21T14:59:00Z')), '2026-09-21');
+});
+t('sitemap.readSpreadsheetId: config.js のソースからスプレッドシートIDを読み出せる', () => {
+  assert.equal(sitemap.readSpreadsheetId("  SPREADSHEET_ID: 'ABC-123_x',\n"), 'ABC-123_x');
+  assert.throws(() => sitemap.readSpreadsheetId('no id here'), /SPREADSHEET_ID/);
+});
+
+// ===== 店舗ページのSEO出力（改修6-(c)(d)・assets/js/seo.js） =====
+
+const STORE_FIXTURE = {
+  id: 'S00001',
+  name: 'ゲウチャイ 新宿店',
+  description: ' タイ直送の食材とスパイスを使った本格タイ料理店。\nランチからディナーまで楽しめます。 ',
+  area: '新宿',
+  station: '新宿駅',
+  walkMinutes: '3',
+  address: '東京都新宿区西新宿1-1-1',
+  storeType: 'Restaurant',
+  mapUrl: 'https://maps.google.com/?cid=12345',
+  websiteUrl: 'https://example.com/shop',
+  exteriorImage: 'https://example.com/ext.jpg',
+};
+
+t('seo.storeTitle: 「店舗名｜THAI SPOT TOKYO」になる', () => {
+  assert.equal(seo.storeTitle(STORE_FIXTURE), 'ゲウチャイ 新宿店｜THAI SPOT TOKYO');
+});
+t('seo.storeTitle: 店舗名が空ならサイト名だけを返す（壊れたtitleを出さない）', () => {
+  assert.equal(seo.storeTitle({ name: '  ' }), 'THAI SPOT TOKYO');
+});
+t('seo.storeDescription: エリア・店舗名・最寄駅・徒歩分・紹介文が入り120字以内に収まる', () => {
+  const d = seo.storeDescription(STORE_FIXTURE);
+  assert.ok(d.startsWith('新宿のタイ料理店「ゲウチャイ 新宿店」。最寄駅は新宿駅（徒歩3分）。'));
+  assert.ok(d.includes('タイ直送の食材'));
+  assert.ok(d.length <= 120);
+  assert.equal(/[\n\r]/.test(d), false); // 改行は潰してある
+});
+t('seo.storeDescription: 120字を超える紹介文は…で省略する', () => {
+  const d = seo.storeDescription({ ...STORE_FIXTURE, description: 'あ'.repeat(400) });
+  assert.equal(d.length, 120);
+  assert.ok(d.endsWith('…'));
+});
+t('seo.storeDescription: Store_typeがCafeなら「タイカフェ」と書く', () => {
+  const d = seo.storeDescription({ ...STORE_FIXTURE, storeType: 'Cafe ' });
+  assert.ok(d.startsWith('新宿のタイカフェ「'));
+});
+t('seo.storeDescription: 徒歩分が非数値なら徒歩表記を出さない（誤った分数を断定しない）', () => {
+  const d = seo.storeDescription({ ...STORE_FIXTURE, walkMinutes: '徒歩すぐ' });
+  assert.ok(d.includes('最寄駅は新宿駅。'));      // 駅名だけ出して徒歩は省く
+  assert.equal(/（徒歩.*?）/.test(d), false);    // 「（徒歩…）」の形は一切出さない
+  // 全角数字の入力は半角化して採用する（util.normalizeWalkMinutes 経由）
+  assert.ok(seo.storeDescription({ ...STORE_FIXTURE, walkMinutes: '５' }).includes('（徒歩5分）'));
+});
+t('seo.storeJsonLd: Restaurant必須項目（name/url/servesCuisine/address/hasMap/最寄駅）がそろう', () => {
+  const ld = seo.storeJsonLd(STORE_FIXTURE);
+  assert.equal(ld['@context'], 'https://schema.org');
+  assert.equal(ld['@type'], 'Restaurant');
+  assert.equal(ld.name, 'ゲウチャイ 新宿店');
+  assert.equal(ld.url, 'https://thaispot-tokyo.com/store.html?id=S00001');
+  assert.equal(ld.servesCuisine, 'Thai');
+  assert.equal(ld.address['@type'], 'PostalAddress');
+  assert.equal(ld.address.streetAddress, '東京都新宿区西新宿1-1-1');
+  assert.equal(ld.address.addressLocality, '新宿');
+  assert.equal(ld.hasMap, 'https://maps.google.com/?cid=12345');
+  assert.equal(ld.additionalProperty[0].value, '新宿駅');
+  assert.equal(ld.areaServed.name, '新宿');
+  assert.deepEqual(ld.image, ['https://example.com/ext.jpg']);
+  assert.deepEqual(ld.sameAs, ['https://example.com/shop']);
+});
+t('seo.storeJsonLd: Google_Map_URLが無ければ住所からGoogleマップ検索URLを組み立てる', () => {
+  const ld = seo.storeJsonLd({ ...STORE_FIXTURE, mapUrl: '' });
+  assert.equal(ld.hasMap, 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent('東京都新宿区西新宿1-1-1'));
+});
+t('seo.storeJsonLd: javascript: の地図URL・公式サイトURLは採用しない（safeUrl通過のみ）', () => {
+  const ld = seo.storeJsonLd({ id: 'S1', name: 'X', mapUrl: 'javascript:alert(1)', websiteUrl: 'javascript:alert(1)' });
+  assert.equal('hasMap' in ld, false);
+  assert.equal('sameAs' in ld, false);
+});
+t('seo.storeJsonLd: 空の項目はキー自体を作らない（未確認の情報を出さない）', () => {
+  const ld = seo.storeJsonLd({ id: 'S1', name: '店' });
+  assert.deepEqual(Object.keys(ld).sort(), ['@context', '@type', 'description', 'name', 'servesCuisine', 'url']);
+});
+t('seo.serializeJsonLd: </script>を含むデータでも不等号が生で出ず JSON.parse できる', () => {
+  const json = seo.serializeJsonLd(seo.storeJsonLd({ id: 'S1', name: '悪意</script><img src=x>' }));
+  assert.equal(json.includes('<'), false);
+  assert.equal(JSON.parse(json).name, '悪意</script><img src=x>');
+});
+t('seo.storeUrl: IDはURLエンコードされる（?id= 付きの絶対URL）', () => {
+  assert.equal(seo.storeUrl({ id: 'S 00 1&x' }), 'https://thaispot-tokyo.com/store.html?id=S%2000%201%26x');
 });
 
 // ===== 実行サマリ =====

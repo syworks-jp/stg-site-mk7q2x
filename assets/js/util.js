@@ -30,6 +30,18 @@
     return t;
   }
 
+  // normFacet: 条件チップ（エリア・最寄駅など）の突合と部分一致用の正規化（改修① 2026-09-22）。
+  //  normSearch（NFKC＋トリム＋小文字化＋ひらがな→カタカナ折りたたみ）に加えて、空白と中黒を落とす。
+  //  NFKC の時点で半角カナ「ｼﾝｼﾞｭｸ」→「シンジュク」、全角英数「１」→「1」、全角スペース→半角スペースまで
+  //  済んでいるので、ここでは残りの表記ゆれだけを潰す。
+  //  中黒・空白を落とす理由: 実データに「田町駅・三田駅」のような併記があり、「三田」で引けないと
+  //  駅名入力欄の意味がないため。normSearch と分けたのは、フリーワード検索（要件2-4）の挙動を
+  //  変えずに、チップの絞り込みだけを緩くするため。
+  function normFacet(s) {
+    if (s == null) return '';
+    return normSearch(s).replace(/[ 　・･,]/g, '');
+  }
+
   // normalizeWalkMinutes: 徒歩分数の表示可否を検証する（実装設計書13-I-7）。
   //  Walk_Minutes列は先方の自由入力欄のため「約5」「5分」等の非数値混入があり得る。
   //  半角化（NFKC）した上で /^\d+$/ に一致する値のみ表示用の文字列として返し、非数値は null（=表示自体を省略）。
@@ -195,6 +207,7 @@
     safeUrl: safeUrl,
     norm: norm,
     normSearch: normSearch,
+    normFacet: normFacet,
     normalizeWalkMinutes: normalizeWalkMinutes,
     imageUrl: imageUrl,
     qs: qs,

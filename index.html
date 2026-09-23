@@ -5,6 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>THAI SPOT TOKYO | 東京のタイ料理店・タイカフェ検索</title>
 <meta name="description" content="東京都内のタイ料理店・タイカフェを、料理・エリア・駅・シーン・特徴から探せる検索サイトです。">
+<!-- Google Search Console の所有権確認タグ(改修6-(e)・2026-09-22 発注者支給) -->
+<meta name="google-site-verification" content="zopqPQv0fN5-KnyUCg4_Tm0X33ekgBTEK4AAmWwKxs0">
+<link rel="canonical" href="https://thaispot-tokyo.com/">
+<!-- SNS共有カード(OGP/Twitter)。画像はサイト共通 assets/img/ogp.jpg・URLは絶対指定(改修6-(b)) -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="THAI SPOT TOKYO">
+<meta property="og:locale" content="ja_JP">
+<meta property="og:title" content="THAI SPOT TOKYO | 東京のタイ料理店・タイカフェ検索">
+<meta property="og:description" content="東京都内のタイ料理店・タイカフェを、料理・エリア・駅・シーン・特徴から探せる検索サイトです。">
+<meta property="og:url" content="https://thaispot-tokyo.com/">
+<meta property="og:image" content="https://thaispot-tokyo.com/assets/img/ogp.jpg">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="assets/css/style.css?v=20260826a">
 <style>
   /* このページ限定の補助スタイル(style.cssは編集しない・search.html等の局所style慣例に準拠・実装設計書13-H)。
@@ -13,6 +25,9 @@
   .hero__lead { font-size: 13px; color: #fff; margin: -2px 0 10px; text-shadow: 0 1px 3px rgba(0,0,0,.7), 0 2px 10px rgba(0,0,0,.5); } /* 仕様書3-1の説明文(影強化=8/25課長指摘対応) */
   .promo-panel__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); } /* Thai SELECT 2ボタン化(13-H-5)の横並び */
 </style>
+<!-- GA4(改修6-(f))。config.js の STAGING_MODE:true のときは ga.js が何もしない。
+     defer なので本文末尾の config.js が評価された後に実行される(読み込み順の規約どおり)。 -->
+<script defer src="assets/js/ga.js?v=20260922a"></script>
 </head>
 <body>
 
@@ -148,9 +163,9 @@
 
 <div id="site-footer"></div>
 
-<script src="assets/js/config.js?v=20260826a"></script>
-<script src="assets/js/texts-default.js?v=20260826a"></script>
-<script src="assets/js/util.js?v=20260826a"></script>
+<script src="assets/js/config.js?v=20260922a"></script>
+<script src="assets/js/texts-default.js?v=20260922a"></script>
+<script src="assets/js/util.js?v=20260922a"></script>
 <script src="assets/js/data.js?v=20260826a"></script>
 <script src="assets/js/render.js?v=20260826a"></script>
 <script src="assets/js/log.js?v=20260826a"></script>

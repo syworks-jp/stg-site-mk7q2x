@@ -5,7 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title id="page-title">店舗詳細｜THAI SPOT TOKYO</title>
 <meta name="description" id="page-description" content="店舗の紹介・アクセス・メニュー・特徴・地図をまとめて表示します。">
+<link rel="canonical" href="https://thaispot-tokyo.com/store.html">
+<!-- SNS共有カード(OGP/Twitter)。画像はサイト共通 assets/img/ogp.jpg・URLは絶対指定(改修6-(b)) -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="THAI SPOT TOKYO">
+<meta property="og:locale" content="ja_JP">
+<meta property="og:title" content="店舗詳細｜THAI SPOT TOKYO">
+<meta property="og:description" content="店舗の紹介・アクセス・メニュー・特徴・地図をまとめて表示します。">
+<meta property="og:url" content="https://thaispot-tokyo.com/store.html">
+<meta property="og:image" content="https://thaispot-tokyo.com/assets/img/ogp.jpg">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="assets/css/style.css?v=20260826a">
+<!-- GA4(改修6-(f))。config.js の STAGING_MODE:true のときは ga.js が何もしない。
+     defer なので本文末尾の config.js が評価された後に実行される(読み込み順の規約どおり)。 -->
+<script defer src="assets/js/ga.js?v=20260922a"></script>
 </head>
 <body>
 
@@ -45,12 +58,14 @@
 <!-- 要件5章の表示順どおりJSで構築する。全ての動的テキストはTS.util.el()のtextContent経由、
      href/srcは常にTS.util.safeUrl()/imageUrl()を明示的に呼ぶか、自前組み立て文字列を直接代入する
      (実装設計書3章セキュリティ非交渉・10-1規約)。情報確認日(Verified_Date)は設計書10-5裁定により表示しない。 -->
-<script src="assets/js/config.js?v=20260826a"></script>
-<script src="assets/js/texts-default.js?v=20260826a"></script>
-<script src="assets/js/util.js?v=20260826a"></script>
+<script src="assets/js/config.js?v=20260922a"></script>
+<script src="assets/js/texts-default.js?v=20260922a"></script>
+<script src="assets/js/util.js?v=20260922a"></script>
 <script src="assets/js/data.js?v=20260826a"></script>
 <script src="assets/js/render.js?v=20260826a"></script>
 <script src="assets/js/log.js?v=20260826a"></script>
+<!-- 店舗ごとのtitle/description/canonical/JSON-LDを組み立てる(改修6-(c)(d)・2026-09-22) -->
+<script src="assets/js/seo.js?v=20260922a"></script>
 <script>
 (function () {
   'use strict';
@@ -108,11 +123,18 @@
   // ---- 表示順(要件5章): 店舗名→画像→紹介文→エリア/最寄駅/徒歩→タイプ・ThaiSELECT→Maps→
   //   食べられるもの→おすすめシーン→特徴→店舗情報→公式/Instagram→動画→TikTok→注意書き+修正連絡 ----
   function renderStore(store, db) {
-    // title/descriptionは店舗名で動的更新(SEO・要件9章)
-    document.title = store.name + '｜THAI SPOT TOKYO';
-    var descMeta = document.getElementById('page-description');
-    if (descMeta) {
-      descMeta.setAttribute('content', store.description ? store.description.slice(0, 120) : db.texts('meta_desc_store'));
+    // title/description/canonical/JSON-LDを店舗ごとの値に差し替える(改修6-(c)(d)・2026-09-22)。
+    // 組み立ては assets/js/seo.js（純粋関数＋DOM反映）に集約し、ここからは1回呼ぶだけにする。
+    // データが取れなかった場合はこの関数自体が呼ばれないため、HTMLに書いてある共通文言のまま残る。
+    if (TS.seo && typeof TS.seo.applyStore === 'function') {
+      TS.seo.applyStore(store);
+    } else {
+      // 旧経路（seo.js 読み込み失敗時の保険）: 店舗名だけでも反映する
+      document.title = store.name + '｜THAI SPOT TOKYO';
+      var descMeta = document.getElementById('page-description');
+      if (descMeta) {
+        descMeta.setAttribute('content', store.description ? store.description.slice(0, 120) : db.texts('meta_desc_store'));
+      }
     }
 
     var root = document.getElementById('store-detail');

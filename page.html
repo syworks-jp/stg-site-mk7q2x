@@ -5,7 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title id="page-title">お知らせ｜THAI SPOT TOKYO</title>
 <meta name="description" id="page-description" content="THAI SPOT TOKYOからのお知らせ・特集ページです。">
+<link rel="canonical" href="https://thaispot-tokyo.com/page.html">
+<!-- SNS共有カード(OGP/Twitter)。画像はサイト共通 assets/img/ogp.jpg・URLは絶対指定(改修6-(b)) -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="THAI SPOT TOKYO">
+<meta property="og:locale" content="ja_JP">
+<meta property="og:title" content="お知らせ｜THAI SPOT TOKYO">
+<meta property="og:description" content="THAI SPOT TOKYOからのお知らせ・特集ページです。">
+<meta property="og:url" content="https://thaispot-tokyo.com/page.html">
+<meta property="og:image" content="https://thaispot-tokyo.com/assets/img/ogp.jpg">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="assets/css/style.css?v=20260826a">
+<!-- GA4(改修6-(f))。config.js の STAGING_MODE:true のときは ga.js が何もしない。
+     defer なので本文末尾の config.js が評価された後に実行される(読み込み順の規約どおり)。 -->
+<script defer src="assets/js/ga.js?v=20260922a"></script>
 </head>
 <body>
 
@@ -47,9 +60,9 @@
      場合はstore.html同様に「データを読み込めませんでした」表示にする(白画面禁止・要件2-3)。
      全ての動的テキストはTS.util.el()のtextContent/TS.util.setText()経由。画像は必ずTS.util.imageUrl()を
      明示的に呼ぶ(設計書6章・10-1規約)。 -->
-<script src="assets/js/config.js?v=20260826a"></script>
-<script src="assets/js/texts-default.js?v=20260826a"></script>
-<script src="assets/js/util.js?v=20260826a"></script>
+<script src="assets/js/config.js?v=20260922a"></script>
+<script src="assets/js/texts-default.js?v=20260922a"></script>
+<script src="assets/js/util.js?v=20260922a"></script>
 <script src="assets/js/data.js?v=20260826a"></script>
 <script src="assets/js/render.js?v=20260826a"></script>
 <script>

@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>お店を探す｜THAI SPOT TOKYO</title>
 <meta name="description" content="料理・エリア・駅・シーン・特徴・フリーワードを組み合わせて、東京のタイ料理店を検索できます。">
+<link rel="canonical" href="https://thaispot-tokyo.com/search.html">
+<!-- SNS共有カード(OGP/Twitter)。画像はサイト共通 assets/img/ogp.jpg・URLは絶対指定(改修6-(b)) -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="THAI SPOT TOKYO">
+<meta property="og:locale" content="ja_JP">
+<meta property="og:title" content="お店を探す｜THAI SPOT TOKYO">
+<meta property="og:description" content="料理・エリア・駅・シーン・特徴・フリーワードを組み合わせて、東京のタイ料理店を検索できます。">
+<meta property="og:url" content="https://thaispot-tokyo.com/search.html">
+<meta property="og:image" content="https://thaispot-tokyo.com/assets/img/ogp.jpg">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="assets/css/style.css?v=20260826a">
 <style>
   /* このページ限定の補助スタイル(style.cssは編集しない・実装設計書10-3章の check.html 局所style慣例に準拠)。
@@ -25,6 +35,9 @@
   /* #focus着地時の視覚フォーカス(実装設計書10-5: 条件は未適用・スクロール+視覚強調のみ) */
   .is-focused { outline: 2px solid var(--color-primary); outline-offset: 4px; border-radius: var(--radius-m); }
 </style>
+<!-- GA4(改修6-(f))。config.js の STAGING_MODE:true のときは ga.js が何もしない。
+     defer なので本文末尾の config.js が評価された後に実行される(読み込み順の規約どおり)。 -->
+<script defer src="assets/js/ga.js?v=20260922a"></script>
 </head>
 <body>
 
@@ -57,14 +70,28 @@
           <div id="dish-groups"></div>
         </div>
 
+        <!-- エリア: 主要エリアだけ初期表示し、[すべてのエリアを見る]で全エリア(改修① 1.(a))。
+             ボタンは条件が揃ったときだけJS側で表示するのでhidden始まり(JS無効時は主要も全件も出ない
+             のではなく、従来どおり全件が出る=facets側で主要リストが空なら全件表示に落ちる)。 -->
         <div class="filter-group" data-cat-group="area">
           <h2 id="cat-title-area">エリア</h2>
           <div id="chips-area"></div>
+          <p class="facet-note" id="area-note" hidden></p>
+          <button type="button" class="facet-toggle" id="area-toggle" hidden>すべてのエリアを見る</button>
         </div>
 
+        <!-- 最寄駅: 主要駅だけ初期表示 + 駅名の入力欄で絞り込み(改修① 1.(a)(b))。
+             入力欄はname無し=フォーム送信値に含めない(検索条件ではなく候補の絞り込みUIのため)。 -->
         <div class="filter-group" data-cat-group="station">
           <h2 id="cat-title-station">最寄駅</h2>
+          <div class="facet-filter" id="station-filter-wrap" hidden>
+            <label class="visually-hidden" for="station-filter-input" id="station-filter-label">駅名で絞り込む</label>
+            <input class="form-input" type="search" id="station-filter-input"
+                   placeholder="駅名を入力（例: 渋谷）" autocomplete="off">
+          </div>
           <div id="chips-station"></div>
+          <p class="facet-note" id="station-note" hidden></p>
+          <button type="button" class="facet-toggle" id="station-toggle" hidden>駅一覧を見る</button>
         </div>
 
         <div class="filter-group" data-cat-group="scene">
@@ -116,12 +143,14 @@
 
 <div id="site-footer"></div>
 
-<script src="assets/js/config.js?v=20260826a"></script>
-<script src="assets/js/texts-default.js?v=20260826a"></script>
-<script src="assets/js/util.js?v=20260826a"></script>
+<script src="assets/js/config.js?v=20260922a"></script>
+<script src="assets/js/texts-default.js?v=20260922a"></script>
+<script src="assets/js/util.js?v=20260922a"></script>
 <script src="assets/js/data.js?v=20260826a"></script>
 <script src="assets/js/render.js?v=20260826a"></script>
 <script src="assets/js/search.js?v=20260826a"></script>
+<!-- 改修①: 条件チップの選択肢生成と表示制御(search.html/cafe.htmlで共通)。render/utilの後に読む。 -->
+<script src="assets/js/facets.js?v=20260922a"></script>
 <script src="assets/js/log.js?v=20260826a"></script>
 <script>
 (function () {
@@ -154,6 +183,9 @@
   var dishGroups = [];   // [{key,label,items:[...]}]
   var selectedConds = { dish: '', area: '', station: '', scene: '', feature: '', type: '' };
   var lastDb = null;
+  // 改修①: 主要エリア・主要駅（Site_Texts の major_areas / major_stations。既定は texts-default.js）
+  var majorItems = { area: [], station: [] };
+  var facetGroups = {}; // cat -> TS.facets.createGroup(...)
 
   TS.render.chrome('search');
 
@@ -171,20 +203,22 @@
   var hasUrlConds = !!(selectedConds.dish || selectedConds.area || selectedConds.station ||
     selectedConds.scene || selectedConds.feature || selectedConds.type || initialFreeword);
 
+  // 改修①: チップ群の受け皿を先に作る（イベント登録は1回だけ・中身はデータ到着後に描画）
+  setupFacetGroups();
+
   TS.data.load().then(function (db) {
     lastDb = db;
     TS.render.footerNotices(db);
     insertWarningsBanner(db);
     applyTexts(db);
 
-    catItems = buildCatItems(db);
+    catItems = TS.facets.buildCatItems(db);
+    // 主要リストは実データに在る値だけに解決される（Site_Textsに無い名前を書かれても黙って外れる）
+    majorItems.area = TS.facets.resolveMajor(catItems.area, db.texts('major_areas'));
+    majorItems.station = TS.facets.resolveMajor(catItems.station, db.texts('major_stations'));
     dishGroups = buildDishGroups(db, db.menus.filter(function (m) { return m.published; }));
 
-    renderCatGroup('area', 'chips-area');
-    renderCatGroup('station', 'chips-station');
-    renderCatGroup('scene', 'chips-scene');
-    renderCatGroup('feature', 'chips-feature');
-    renderCatGroup('type', 'chips-type');
+    renderAllCatGroups();
     renderDishGroups();
 
     if (hasUrlConds) {
@@ -234,6 +268,11 @@
     setTextIfPresent('cat-title-scene', db.texts('search_cat_scene'));
     setTextIfPresent('cat-title-feature', db.texts('search_cat_feature'));
     setTextIfPresent('cat-title-type', db.texts('search_cat_type'));
+    // 改修①: 駅名の絞り込み欄（ラベルは読み上げ用・プレースホルダは見える文言）
+    setTextIfPresent('station-filter-label', db.texts('search_station_filter_label'));
+    var stPlaceholder = db.texts('search_station_filter_placeholder');
+    var stInput = document.getElementById('station-filter-input');
+    if (stInput && stPlaceholder) stInput.placeholder = stPlaceholder;
     setTextIfPresent('search-submit-btn', db.texts('search_button'));
     setTextIfPresent('search-clear-btn', db.texts('search_clear'));
     setTextIfPresent('results-title', db.texts('search_results_heading'));
@@ -241,33 +280,10 @@
   }
 
   // ---- 条件チップの選択肢を実データから動的生成(要件2-1: ハードコード禁止・2-4: dedup) ----
+  // 改修①(2026-09-22): dedupOrdered / buildCatItems は cafe.html と同じ実装が複製されていたため
+  // assets/js/facets.js へ移設した。ここは料理グループ生成から使う分の別名だけ残す。
 
-  function dedupOrdered(values) {
-    var seen = {};
-    var out = [];
-    (values || []).forEach(function (v) {
-      var t = (v == null ? '' : String(v)).trim();
-      if (!t) return;
-      var key = TS.util.norm(t);
-      if (seen[key]) return;
-      seen[key] = true;
-      out.push(t);
-    });
-    return out;
-  }
-
-  function buildCatItems(db) {
-    var stores = db.stores.filter(function (s) { return s.published; });
-    var scenes = db.scenes.filter(function (s) { return s.published; });
-    var features = db.features.filter(function (s) { return s.published; });
-    return {
-      area: dedupOrdered(stores.map(function (s) { return s.area; })),
-      station: dedupOrdered(stores.map(function (s) { return s.station; })),
-      scene: dedupOrdered(scenes.map(function (s) { return s.name; })),
-      feature: dedupOrdered(features.map(function (s) { return s.name; })),
-      type: dedupOrdered(stores.map(function (s) { return s.storeType; }))
-    };
-  }
+  var dedupOrdered = TS.facets.dedupOrdered;
 
   // 料理はCategory別グループ(実装設計書10-5の11種)。未知カテゴリのメニューも「その他」で取りこぼさない
   // (要件2-1: 発注者がMenusに行を足せば選択肢が自動で増える、の帰結)。
@@ -304,18 +320,57 @@
     }
   }
 
-  function renderCatGroup(cat, mountId) {
-    var mount = document.getElementById(mountId);
-    if (!mount || !catItems) return;
-    while (mount.firstChild) mount.removeChild(mount.firstChild);
-    var chipsEl = TS.render.chips(catItems[cat], {
-      selectedValue: selectedConds[cat] || null,
-      onSelect: function (value) {
-        toggleCond(cat, value);
-        renderCatGroup(cat, mountId);
+  // 改修①: チップ群の描画は TS.facets.createGroup に集約（主要のみ/全件展開/駅名絞り込み/選択値の必ず表示）。
+  // エリアと最寄駅だけ主要リストと展開ボタンを持ち、シーン・こだわり・店舗タイプは従来どおり全件を出す
+  // （主要リストを渡さなければ facets 側が常に全件表示に落とす＝同じ関数で扱える）。
+  function makeFacetGroup(cat, opts) {
+    opts = opts || {};
+    return TS.facets.createGroup({
+      mountId: opts.mountId,
+      toggleId: opts.toggleId,
+      noteId: opts.noteId,
+      inputId: opts.inputId,
+      inputWrapId: opts.inputWrapId,
+      getAll: function () { return catItems ? (catItems[cat] || []) : []; },
+      getMajor: function () { return majorItems[cat] || []; },
+      getSelected: function () { return selectedConds[cat] || ''; },
+      onSelect: function (value) { toggleCond(cat, value); },
+      labels: function () {
+        var db = lastDb;
+        function tx(key, fallback) {
+          var v = (db && typeof db.texts === 'function') ? db.texts(key) : '';
+          return v || fallback;
+        }
+        return {
+          showAll: tx(opts.showAllKey, opts.showAllFallback),
+          showMajor: tx(opts.showMajorKey, opts.showMajorFallback),
+          noMatch: tx('search_station_no_match', '入力に一致する駅はありませんでした。別の言葉で試してください。')
+        };
       }
     });
-    mount.appendChild(chipsEl);
+  }
+
+  function setupFacetGroups() {
+    facetGroups.area = makeFacetGroup('area', {
+      mountId: 'chips-area', toggleId: 'area-toggle', noteId: 'area-note',
+      showAllKey: 'search_area_show_all', showAllFallback: 'すべてのエリアを見る',
+      showMajorKey: 'search_area_show_major', showMajorFallback: '主要なエリアだけ表示'
+    });
+    facetGroups.station = makeFacetGroup('station', {
+      mountId: 'chips-station', toggleId: 'station-toggle', noteId: 'station-note',
+      inputId: 'station-filter-input', inputWrapId: 'station-filter-wrap',
+      showAllKey: 'search_station_show_all', showAllFallback: '駅一覧を見る',
+      showMajorKey: 'search_station_show_major', showMajorFallback: '主要な駅だけ表示'
+    });
+    facetGroups.scene = makeFacetGroup('scene', { mountId: 'chips-scene' });
+    facetGroups.feature = makeFacetGroup('feature', { mountId: 'chips-feature' });
+    facetGroups.type = makeFacetGroup('type', { mountId: 'chips-type' });
+  }
+
+  function renderAllCatGroups() {
+    ['area', 'station', 'scene', 'feature', 'type'].forEach(function (cat) {
+      if (facetGroups[cat]) facetGroups[cat].render();
+    });
   }
 
   function renderDishGroups() {
@@ -430,14 +485,11 @@
   document.getElementById('search-clear-btn').addEventListener('click', function () {
     selectedConds = { dish: '', area: '', station: '', scene: '', feature: '', type: '' };
     document.getElementById('freeword-input').value = '';
-    if (catItems) {
-      renderCatGroup('area', 'chips-area');
-      renderCatGroup('station', 'chips-station');
-      renderCatGroup('scene', 'chips-scene');
-      renderCatGroup('feature', 'chips-feature');
-      renderCatGroup('type', 'chips-type');
-      renderDishGroups();
-    }
+    // 改修①: 駅名の入力欄と「すべて見る」の展開状態も初期に戻す（条件も表示も“やり直し”に揃える）
+    ['area', 'station', 'scene', 'feature', 'type'].forEach(function (cat) {
+      if (facetGroups[cat]) facetGroups[cat].reset();
+    });
+    if (catItems) renderDishGroups();
     if (lastDb) {
       var conds = emptyConds();
       var result = TS.search.run(lastDb, conds);
@@ -459,6 +511,11 @@
     var cat = m[1].toLowerCase();
     var groupEl = document.querySelector('[data-cat-group="' + cat + '"]');
     if (!groupEl) return;
+    // 固定ヘッダー(.site-header・position:sticky)の高さ分、見出しや駅名入力欄が隠れないよう
+    // 実測値をscroll-margin-topに反映する(CSS固定値ではなく実測にするのは、幅でヘッダー高さが変わるため)。
+    var hdr = document.querySelector('.site-header');
+    var offset = (hdr ? hdr.offsetHeight : 0) + 16; // 視覚フォーカスの outline-offset 4px を含めて余白
+    groupEl.style.scrollMarginTop = offset + 'px';
     if (groupEl.scrollIntoView) groupEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
     groupEl.classList.add('is-focused');
     setTimeout(function () { groupEl.classList.remove('is-focused'); }, 2400);
